@@ -3,6 +3,9 @@ import { groq } from "@/lib/groq";
 import admin from "firebase-admin";
 import { adminDb } from "@/lib/firebase-admin";
 
+// Prevent Next.js from attempting to statically evaluate this route at build time
+export const dynamic = "force-dynamic";
+
 // These are the prompts that simulate real user queries
 const PROMPTS = [
   "What are the best tools for {category}?",
