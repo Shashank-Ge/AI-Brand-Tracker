@@ -166,7 +166,6 @@ export async function POST(req: NextRequest) {
               prompt: userQuery,
               scenarioLabel: scenario.label,
               llmResponse: rawResponse,
-              reason: parsed.reason,
               ...parsed,
             };
 
