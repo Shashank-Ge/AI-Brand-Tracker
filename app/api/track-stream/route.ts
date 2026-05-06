@@ -3,59 +3,98 @@ import { groq } from "@/lib/groq";
 import admin from "firebase-admin";
 import { adminDb } from "@/lib/firebase-admin";
 
-const PROMPTS = [
-  "What are the best tools for {category}?",
-  "Recommend a good {category} platform",
-  "What do people use for {category}?",
-  "Top {category} tools in 2025",
-  "Which {category} product should I use?",
+// Search scenarios — each represents a real user intent
+const SCENARIOS = [
+  {
+    label: "General recommendation",
+    query: (category: string) => `What are the best ${category}?`,
+  },
+  {
+    label: "Platform comparison",
+    query: (category: string) => `Compare the top ${category} platforms`,
+  },
+  {
+    label: "Beginner advice",
+    query: (category: string) =>
+      `I'm new to ${category}, what should I use?`,
+  },
+  {
+    label: "Professional use case",
+    query: (category: string) =>
+      `What ${category} do professionals rely on?`,
+  },
+  {
+    label: "2026 market leaders",
+    query: (category: string) =>
+      `Which ${category} tools are leading the market in 2026?`,
+  },
 ];
 
-function parseVisibility(response: string, brand: string) {
-  const lower = response.toLowerCase();
-  const brandLower = brand.toLowerCase();
-  const mentioned = lower.includes(brandLower);
+// Build a structured scoring prompt asking the LLM directly
+function buildScoringPrompt(brand: string, category: string, userQuery: string): string {
+  return `You are an AI visibility analyst. A user just searched: "${userQuery}"
 
-  let visibilityScore = 0;
-  let rank = -1;
+Evaluate how prominently the brand "${brand}" would appear in an AI assistant's response to that query in the context of "${category}".
 
-  if (mentioned) {
-    const lines = response.split(/\n|(?:\d+\.\s)|(?:[-•*]\s)/);
-    rank = lines.findIndex(line => line.toLowerCase().includes(brandLower));
-
-    if (rank === 0 || rank === 1) visibilityScore = 95;
-    else if (rank === 2) visibilityScore = 82;
-    else if (rank === 3) visibilityScore = 70;
-    else if (rank === 4) visibilityScore = 58;
-    else if (rank === 5) visibilityScore = 48;
-    else if (rank === 6) visibilityScore = 40;
-    else if (rank === 7) visibilityScore = 35;
-    else if (rank === 8) visibilityScore = 30;
-    else if (rank <= 10) visibilityScore = 25;
-    else if (rank <= 13) visibilityScore = 20;
-    else visibilityScore = 15;
-  }
-
-  const positiveWords = ["best", "great", "excellent", "popular", "recommended",
-    "top", "leading", "powerful", "versatile", "intuitive", "widely used", "go-to"];
-  const negativeWords = ["avoid", "poor", "bad", "slow", "expensive",
-    "complicated", "difficult", "limited", "outdated", "overpriced"];
-
-  let sentiment = "neutral";
-  if (mentioned) {
-    const pos = lower.indexOf(brandLower);
-    const snippet = lower.slice(Math.max(0, pos - 150), pos + 300);
-    const hasPositive = positiveWords.some(w => snippet.includes(w));
-    const hasNegative = negativeWords.some(w => snippet.includes(w));
-    if (hasPositive && !hasNegative) sentiment = "positive";
-    if (hasNegative && !hasPositive) sentiment = "negative";
-    if (hasPositive && hasNegative) sentiment = "mixed";
-  }
-
-  return { mentioned, visibilityScore, sentiment, rank };
+Respond ONLY with a valid JSON object, no markdown, no explanation, exactly this shape:
+{
+  "mentioned": true or false,
+  "rank": 1 to 10 (1 = first/most prominent mention, 10 = barely mentioned, null if not mentioned),
+  "visibilityScore": 0 to 100,
+  "sentiment": "positive" | "negative" | "neutral" | "mixed",
+  "reason": "one sentence explaining the score"
 }
 
-// Helper to format SSE messages
+Scoring guide:
+- 85–100: Dominant — almost always the #1 recommendation in this space
+- 65–84: Strong — consistently top 3, widely trusted
+- 45–64: Moderate — mentioned often but not the go-to choice
+- 25–44: Weak — sometimes mentioned, easily overshadowed
+- 1–24: Marginal — rarely appears, niche or outdated
+- 0: Not mentioned at all in this context`;
+}
+
+// Extract and validate JSON from LLM output
+function parseLLMScore(raw: string): {
+  mentioned: boolean;
+  visibilityScore: number;
+  rank: number;
+  sentiment: string;
+  reason: string;
+} {
+  const defaults = {
+    mentioned: false,
+    visibilityScore: 0,
+    rank: -1,
+    sentiment: "neutral",
+    reason: "Could not parse LLM response",
+  };
+
+  try {
+    // Strip any markdown fences
+    const cleaned = raw.replace(/```json|```/gi, "").trim();
+    const parsed = JSON.parse(cleaned);
+
+    const score = Math.min(100, Math.max(0, Number(parsed.visibilityScore) || 0));
+    const rank = parsed.rank != null ? Number(parsed.rank) - 1 : -1; // convert to 0-indexed
+    const mentioned = Boolean(parsed.mentioned) || score > 0;
+    const sentiment = ["positive", "negative", "neutral", "mixed"].includes(parsed.sentiment)
+      ? parsed.sentiment
+      : "neutral";
+
+    return {
+      mentioned,
+      visibilityScore: score,
+      rank,
+      sentiment,
+      reason: String(parsed.reason || ""),
+    };
+  } catch {
+    return defaults;
+  }
+}
+
+// SSE helper
 function sseMessage(data: object) {
   return `data: ${JSON.stringify(data)}\n\n`;
 }
@@ -64,14 +103,18 @@ export async function POST(req: NextRequest) {
   const { brands, category } = await req.json();
   const brandList: string[] = Array.isArray(brands) ? brands : [brands];
 
-  // Create a readable stream
   const stream = new ReadableStream({
     async start(controller) {
       const encode = (data: object) =>
         controller.enqueue(new TextEncoder().encode(sseMessage(data)));
 
       try {
-        encode({ type: "start", message: `Starting analysis for ${brandList.join(", ")}...`, total: brandList.length * PROMPTS.length });
+        const totalSteps = brandList.length * SCENARIOS.length;
+        encode({
+          type: "start",
+          message: `Starting visibility analysis for: ${brandList.join(", ")}`,
+          total: totalSteps,
+        });
 
         const allBrandResults: Record<string, any> = {};
         let completedSteps = 0;
@@ -82,37 +125,39 @@ export async function POST(req: NextRequest) {
           encode({
             type: "brand_start",
             brand,
-            message: `Analyzing "${brand}"...`,
+            message: `Analyzing "${brand}" across ${SCENARIOS.length} search scenarios...`,
           });
 
-          for (let i = 0; i < PROMPTS.length; i++) {
-            const promptTemplate = PROMPTS[i];
-            const prompt = promptTemplate.replace("{category}", category);
+          for (let i = 0; i < SCENARIOS.length; i++) {
+            const scenario = SCENARIOS[i];
+            const userQuery = scenario.query(category);
+            const scoringPrompt = buildScoringPrompt(brand, category, userQuery);
 
-            // Tell frontend which prompt is being sent
             encode({
               type: "prompt_start",
               brand,
               promptIndex: i,
-              prompt,
-              message: `Querying LLM: "${prompt}"`,
+              prompt: userQuery,
+              message: `[${scenario.label}] Scoring "${brand}" for: "${userQuery}"`,
             });
 
             const completion = await groq.chat.completions.create({
-              messages: [{ role: "user", content: prompt }],
+              messages: [{ role: "user", content: scoringPrompt }],
               model: "llama-3.3-70b-versatile",
-              temperature: 0.8,
+              temperature: 0.3, // lower = more consistent scoring
             });
 
-            const response = completion.choices[0]?.message?.content || "";
-            const parsed = parseVisibility(response, brand);
+            const rawResponse = completion.choices[0]?.message?.content || "";
+            const parsed = parseLLMScore(rawResponse);
             completedSteps++;
 
             const result = {
               brand,
               category,
-              prompt,
-              llmResponse: response,
+              prompt: userQuery,
+              scenarioLabel: scenario.label,
+              llmResponse: rawResponse,
+              reason: parsed.reason,
               ...parsed,
             };
 
@@ -123,33 +168,33 @@ export async function POST(req: NextRequest) {
 
             results.push(result);
 
-            // Send result for this prompt
             encode({
               type: "prompt_done",
               brand,
               promptIndex: i,
-              prompt,
+              prompt: userQuery,
               mentioned: parsed.mentioned,
               visibilityScore: parsed.visibilityScore,
               sentiment: parsed.sentiment,
               rank: parsed.rank,
+              reason: parsed.reason,
               completed: completedSteps,
               message: parsed.mentioned
-                ? `✅ "${brand}" mentioned — Rank #${parsed.rank + 1}, Score: ${parsed.visibilityScore}`
-                : `❌ "${brand}" not mentioned`,
+                ? `✅ "${brand}" — Score: ${parsed.visibilityScore}/100 (${scenario.label})`
+                : `❌ "${brand}" not prominent — Score: 0 (${scenario.label})`,
             });
           }
 
           const avgScore = Math.round(
             results.reduce((sum, r) => sum + r.visibilityScore, 0) / results.length
           );
-          const mentionCount = results.filter(r => r.mentioned).length;
+          const mentionCount = results.filter((r) => r.mentioned).length;
 
           allBrandResults[brand] = {
             brand,
             category,
             avgVisibilityScore: avgScore,
-            mentionedIn: `${mentionCount}/${PROMPTS.length} prompts`,
+            mentionedIn: `${mentionCount}/${SCENARIOS.length} scenarios`,
             results,
           };
 
@@ -157,12 +202,11 @@ export async function POST(req: NextRequest) {
             type: "brand_done",
             brand,
             avgVisibilityScore: avgScore,
-            mentionedIn: `${mentionCount}/${PROMPTS.length} prompts`,
+            mentionedIn: `${mentionCount}/${SCENARIOS.length} scenarios`,
             message: `"${brand}" complete — avg score ${avgScore}/100`,
           });
         }
 
-        // Send final complete event
         encode({
           type: "complete",
           brands: allBrandResults,
@@ -181,7 +225,7 @@ export async function POST(req: NextRequest) {
     headers: {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache",
-      "Connection": "keep-alive",
+      Connection: "keep-alive",
     },
   });
 }

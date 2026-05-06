@@ -3,10 +3,12 @@ import { useState, useEffect } from "react";
 
 interface PromptResult {
   prompt: string;
+  scenarioLabel: string;
   mentioned: boolean;
   visibilityScore: number;
   sentiment: string;
   rank: number;
+  reason: string;
 }
 
 interface BrandResult {
@@ -325,8 +327,13 @@ export default function Home() {
                     {brandResult.results.map((r, i) => (
                       <div key={i} className="bg-gray-800 rounded-xl p-4 border
                                               border-gray-700 mb-2">
-                        <div className="flex justify-between items-start mb-3">
-                          <p className="text-sm text-gray-300 flex-1 pr-4">{r.prompt}</p>
+                        <div className="flex justify-between items-start mb-2">
+                          <div className="flex-1 pr-4">
+                            <p className="text-xs font-medium text-gray-500 uppercase tracking-wider mb-1">
+                              {r.scenarioLabel}
+                            </p>
+                            <p className="text-sm text-gray-300">{r.prompt}</p>
+                          </div>
                           <div className="flex gap-2 shrink-0">
                             <span className={`text-xs px-2 py-1 rounded-full font-medium ${
                               r.mentioned
@@ -335,7 +342,7 @@ export default function Home() {
                             }`}>
                               {r.mentioned
                                 ? r.rank >= 0 ? `Rank #${r.rank + 1}` : "Mentioned"
-                                : "Not Mentioned"}
+                                : "Not Prominent"}
                             </span>
                             <span className={`text-xs px-2 py-1 rounded-full font-medium
                                             ${getSentimentStyle(r.sentiment)}`}>
@@ -343,6 +350,11 @@ export default function Home() {
                             </span>
                           </div>
                         </div>
+                        {r.reason && (
+                          <p className="text-xs text-gray-500 italic mb-3 border-l-2 border-gray-600 pl-2">
+                            {r.reason}
+                          </p>
+                        )}
                         <div className="flex items-center gap-3">
                           <div className="flex-1 bg-gray-700 rounded-full h-2">
                             <div

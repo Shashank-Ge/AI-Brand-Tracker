@@ -20,7 +20,7 @@ export async function GET () {
                 grouped[key] = {
                     brand : data.brand,
                     category : data.category,
-                    createdAt : data.createAt?.toDate?.()?.toISOString() || null,
+                    createdAt : data.createdAt?.toDate?.()?.toISOString() || null,
                     results: [],
                 };
             }
@@ -45,6 +45,6 @@ export async function GET () {
 
     } catch (err: any ) {
         console.error ("Hisotry fetch error: ", err) ;
-        return NextResponse.json ({error :err.messsage} , {status:500});
+        return NextResponse.json ({error :err.message} , {status:500});
     }
 }
