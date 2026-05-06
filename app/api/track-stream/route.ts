@@ -3,6 +3,14 @@ import { groq } from "@/lib/groq";
 import admin from "firebase-admin";
 import { adminDb } from "@/lib/firebase-admin";
 
+// Strip leading superlatives so "top AI tools" → "AI tools" in prompts
+// Avoids "Compare the top TOP AI tools platforms" type doubling
+function normalizeCategory(raw: string): string {
+  return raw
+    .trim()
+    .replace(/^(top|best|leading|popular|great|recommended)\s+/i, "");
+}
+
 // Search scenarios — each represents a real user intent
 const SCENARIOS = [
   {
@@ -11,7 +19,7 @@ const SCENARIOS = [
   },
   {
     label: "Platform comparison",
-    query: (category: string) => `Compare the top ${category} platforms`,
+    query: (category: string) => `Compare popular ${category} options`,
   },
   {
     label: "Beginner advice",
@@ -26,7 +34,7 @@ const SCENARIOS = [
   {
     label: "2026 market leaders",
     query: (category: string) =>
-      `Which ${category} tools are leading the market in 2026?`,
+      `Which products in the ${category} space are leading in 2026?`,
   },
 ];
 
@@ -110,6 +118,7 @@ export async function POST(req: NextRequest) {
 
       try {
         const totalSteps = brandList.length * SCENARIOS.length;
+        const cleanCategory = normalizeCategory(category);
         encode({
           type: "start",
           message: `Starting visibility analysis for: ${brandList.join(", ")}`,
@@ -130,8 +139,8 @@ export async function POST(req: NextRequest) {
 
           for (let i = 0; i < SCENARIOS.length; i++) {
             const scenario = SCENARIOS[i];
-            const userQuery = scenario.query(category);
-            const scoringPrompt = buildScoringPrompt(brand, category, userQuery);
+            const userQuery = scenario.query(cleanCategory);
+            const scoringPrompt = buildScoringPrompt(brand, cleanCategory, userQuery);
 
             encode({
               type: "prompt_start",
