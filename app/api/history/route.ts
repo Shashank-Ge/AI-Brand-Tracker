@@ -1,6 +1,9 @@
 import { NextResponse } from "next/server";
 import { adminDb } from "@/lib/firebase-admin"
 
+// Prevent Next.js from attempting to statically evaluate this route at build time
+export const dynamic = "force-dynamic";
+
 export async function GET () {
     try {
         const snapshot = await adminDb

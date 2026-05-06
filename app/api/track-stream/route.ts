@@ -3,6 +3,9 @@ import { groq } from "@/lib/groq";
 import admin from "firebase-admin";
 import { adminDb } from "@/lib/firebase-admin";
 
+// Prevent Next.js from attempting to statically evaluate this route at build time
+export const dynamic = "force-dynamic";
+
 // Strip leading superlatives so "top AI tools" → "AI tools" in prompts
 // Avoids "Compare the top TOP AI tools platforms" type doubling
 function normalizeCategory(raw: string): string {
